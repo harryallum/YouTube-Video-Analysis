@@ -1,29 +1,53 @@
-import pandas as pd
 import os
+import pandas as pd
 from googleapiclient.discovery import build
-import isodate
-from sqlalchemy import create_engine,text
-### YouTube API credentials
-YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
-api_service_name = "youtube"
-api_version = "v3"
+from sqlalchemy import create_engine
+from datetime import datetime
 
-# Get credentials and create an API client
-youtube = build(
-    api_service_name, api_version, developerKey=YOUTUBE_API_KEY)
-### Import channel IDs from CSV
-# File path for CSV import
-csv_file_path = '../channels/channel_ids.csv'
+def read_channel_ids(csv_file_path):
+    """
+    Read channel IDs from a CSV file into a pandas DataFrame.
 
-# Read channel IDs from CSV file into a list
-import_channel_df = pd.read_csv(csv_file_path, header=None, names=["channel_id"])
-import_channel_df
+    Args:
+    - csv_file_path (str): Path to the CSV file containing channel IDs.
+
+    Returns:
+    - DataFrame: A DataFrame containing the channel IDs.
+    """
+    channel_df = pd.read_csv(csv_file_path, header=None, names=["channel_id"])
+    return channel_df
+
+def create_youtube_client(api_key):
+    """
+    Create and return a client for accessing the YouTube Data API.
+
+    Args:
+    - api_key (str): The API key for accessing the YouTube Data API.
+
+    Returns:
+    - Resource: A client for accessing the YouTube Data API.
+    """
+    api_service_name = "youtube"
+    api_version = "v3"
+    youtube = build(api_service_name, api_version, developerKey=api_key)
+    return youtube
+
 def get_channel_stats(youtube, channel_ids):
+    """
+    Retrieve statistics for YouTube channels.
+
+    Args:
+    - youtube (Resource): A client for accessing the YouTube Data API.
+    - channel_ids (list): List of YouTube channel IDs.
+
+    Returns:
+    - DataFrame: A DataFrame containing statistics for the specified channels.
+    """
     all_data = []
 
     try:
         # Split channel_ids list into chunks of up to 50 ids each
-        id_chunks = [channel_ids[i:i+50] for i in range(0, len(channel_ids), 50)]
+        id_chunks = [channel_ids[i:i + 50] for i in range(0, len(channel_ids), 50)]
 
         for id_chunk in id_chunks:
             request = youtube.channels().list(
@@ -36,21 +60,64 @@ def get_channel_stats(youtube, channel_ids):
                 data = {
                     'channel_name': item['snippet']['title'],
                     'channel_id': item['id'],
-                    'description': item['snippet']['description'],
                     'subscriber_count': item['statistics']['subscriberCount'],
                     'view_count': item['statistics']['viewCount'],
                     'video_count': item['statistics']['videoCount'],
-                    'playlist_id': item['contentDetails']['relatedPlaylists']['uploads'],
-                    'start_date': item['snippet']['publishedAt'],
-                    'country': item['snippet'].get('country', None),
                 }
                 all_data.append(data)
     except Exception as e:
         print(f"Error occurred: {e}")
 
-    return pd.DataFrame(all_data)
-channels_df = get_channel_stats(youtube, import_channel_df['channel_id'])
-channels_df
-from datetime import datetime
-channels_df['etl_date'] = datetime.today().strftime('%Y-%m-%d')
-channels_df
+    all_data = pd.DataFrame(all_data)
+    all_data['etl_date'] = datetime.today().strftime('%Y-%m-%d')
+
+    return all_data
+
+def save_to_database(dataframe, database_path):
+    """
+    Save DataFrame to a SQLite database.
+
+    Args:
+    - dataframe (DataFrame): The DataFrame to be saved.
+    - database_path (str): Path to the SQLite database.
+
+    Returns:
+    - None
+    """
+    # Create engine
+    engine = create_engine(f'sqlite:///{database_path}', echo=True)
+
+    # Create connection
+    conn = engine.connect()
+
+    # Push DataFrame to database
+    dataframe.to_sql(name="channel_stats_daily", con=engine, if_exists='append', index=False)
+
+    # Close the connection
+    conn.close()
+    engine.dispose()
+
+def main():
+    """
+    Main function to orchestrate the process of fetching channel statistics and saving them to a database.
+    """
+    # File paths and API key
+    script_directory = os.path.dirname(os.path.abspath(__file__))  # Get the directory of the script
+    csv_file_path = os.path.join(script_directory, '..', 'channels', 'channel_ids.csv')
+    YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
+    database_path = os.path.join(script_directory, '..', '..', 'db', 'youtube.db')
+
+    # Read channel IDs from CSV
+    channel_df = read_channel_ids(csv_file_path)
+
+    # Create YouTube Data API client
+    youtube_client = create_youtube_client(YOUTUBE_API_KEY)
+
+    # Get channel statistics
+    channels_df = get_channel_stats(youtube_client, channel_df['channel_id'])
+
+    # Save data to database
+    save_to_database(channels_df, database_path)
+
+if __name__ == "__main__":
+    main()
